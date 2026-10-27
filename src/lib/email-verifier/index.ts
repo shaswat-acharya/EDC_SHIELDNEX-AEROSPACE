@@ -96,19 +96,17 @@ async function getDomainInfo(domain: string, caches: BatchCaches): Promise<Domai
  * also accepted, the server accepts everything and the target's "accepted"
  * proves nothing. Cached briefly to avoid repeated probing.
  */
-async function checkCatchAll(domain: string, mxHost: string, cfg: VerifierConfig): Promise<boolean | null> {
+
+async function checkCatchAll(
+  domain: string,
+  mxHosts: string[],
+  cfg: VerifierConfig
+): Promise<boolean | null> {
   const hit = catchAllCache.get(domain);
   if (hit && Date.now() - hit.at < CATCHALL_TTL_MS) return hit.value;
 
   const probeAddress = `zz-probe-${Math.random().toString(36).slice(2, 10)}@${domain}`;
-  const verdict = await probeRcpt(probeAddress, {
-    host: mxHost,
-    heloDomain: cfg.heloDomain,
-    mailFrom: cfg.mailFrom,
-    connectTimeoutMs: cfg.connectTimeoutMs,
-    commandTimeoutMs: cfg.commandTimeoutMs,
-    overallTimeoutMs: cfg.overallTimeoutMs,
-  });
+  const { verdict } = await probeAcrossMx(probeAddress, mxHosts, cfg);
 
   let value: boolean | null;
   if (verdict.kind === "accepted") value = true;
@@ -119,6 +117,7 @@ async function checkCatchAll(domain: string, mxHost: string, cfg: VerifierConfig
   return value;
 }
 
+
 function suggestionFor(local: string, domain: string): string | undefined {
   const alt = suggestDomain(domain);
   return alt ? `${local}@${alt}` : undefined;
@@ -127,6 +126,45 @@ function suggestionFor(local: string, domain: string): string | undefined {
 function trimReply(reply: string): string {
   const t = reply.trim();
   return t.length > 160 ? `${t.slice(0, 157)}…` : t;
+}
+
+async function probeAcrossMx(
+  email: string,
+  hosts: string[],
+  cfg: VerifierConfig
+): Promise<{ host: string; verdict: RcptVerdict }> {
+  let last: { host: string; verdict: RcptVerdict } | undefined;
+
+  for (const host of hosts) {
+    const verdict = await probeRcpt(email, {
+      host,
+      heloDomain: cfg.heloDomain,
+      mailFrom: cfg.mailFrom,
+      connectTimeoutMs: cfg.connectTimeoutMs,
+      commandTimeoutMs: cfg.commandTimeoutMs,
+      overallTimeoutMs: cfg.overallTimeoutMs,
+    });
+
+    last = { host, verdict };
+
+    if (
+      verdict.kind === "unreachable" ||
+      verdict.kind === "timeout" ||
+      verdict.kind === "tempfail"
+    ) {
+      continue;
+    }
+
+    return last;
+  }
+
+  return last ?? {
+    host: hosts[0] ?? "",
+    verdict: {
+      kind: "unreachable",
+      detail: "No usable MX hosts were available to probe",
+    },
+  };
 }
 
 async function verifyOne(token: string, cfg: VerifierConfig, caches: BatchCaches): Promise<VerifyResult> {
@@ -198,6 +236,7 @@ async function verifyOne(token: string, cfg: VerifierConfig, caches: BatchCaches
   }
 
   const mxHost = info.mxHost as string;
+  const mxHosts = info.mxHosts?.length ? info.mxHosts : [mxHost];
   flags.implicitMx = info.implicitMx;
 
   if (!cfg.smtpEnabled) {
@@ -217,17 +256,26 @@ async function verifyOne(token: string, cfg: VerifierConfig, caches: BatchCaches
     );
   }
 
-  const verdict = await probeRcpt(email, {
-    host: mxHost,
-    heloDomain: cfg.heloDomain,
-    mailFrom: cfg.mailFrom,
-    connectTimeoutMs: cfg.connectTimeoutMs,
-    commandTimeoutMs: cfg.commandTimeoutMs,
-    overallTimeoutMs: cfg.overallTimeoutMs,
-  });
+  
+const { host: verifiedHost, verdict } = await probeAcrossMx(
+  email,
+  mxHosts,
+  cfg
+);
 
-  const smtpResult = await classifySmtpVerdict(token, email, domain, mxHost, verdict, flags, checkedAt, cfg);
-  return maybeSuggest(smtpResult, local, flags.free);
+const smtpResult = await classifySmtpVerdict(
+  token,
+  email,
+  domain,
+  verifiedHost,
+  mxHosts,
+  verdict,
+  flags,
+  checkedAt,
+  cfg
+);
+
+return maybeSuggest(smtpResult, local, flags.free);
 }
 
 /**
@@ -243,19 +291,22 @@ function maybeSuggest(result: VerifyResult, local: string, isKnownProvider: bool
   return suggestion ? { ...result, suggestion } : result;
 }
 
+
 async function classifySmtpVerdict(
   token: string,
   email: string,
   domain: string,
   mxHost: string,
+  mxHosts: string[],
   verdict: RcptVerdict,
   flags: VerifyFlags,
   checkedAt: string,
   cfg: VerifierConfig
 ): Promise<VerifyResult> {
+
   switch (verdict.kind) {
     case "accepted": {
-      const catchAll = await checkCatchAll(domain, mxHost, cfg);
+      const catchAll = await checkCatchAll(domain, mxHosts, cfg);
       if (catchAll === true) {
         return {
           input: token,

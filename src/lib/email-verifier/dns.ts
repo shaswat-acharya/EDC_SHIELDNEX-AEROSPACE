@@ -13,8 +13,10 @@ export type DomainStatus = "ok" | "not-found" | "no-mail" | "dns-error";
 export interface DomainInfo {
   domain: string;
   status: DomainStatus;
-  /** Host to connect to for SMTP (lowest-priority MX exchange, or the domain itself for implicit MX). */
+  /** First-choice MX host. */
   mxHost: string | null;
+  /** Ordered MX hosts, from highest priority to lowest. */
+  mxHosts?: string[];
   /** True when there was no MX record and the A/AAAA record is used instead. */
   implicitMx: boolean;
   /** Extra context, e.g. "null-mx". */
@@ -58,13 +60,35 @@ async function computeDomainInfo(domain: string): Promise<DomainInfo> {
       .filter((r) => typeof r.exchange === "string" && r.exchange.trim() !== "" && r.exchange !== ".")
       .sort((a, b) => a.priority - b.priority);
 
-    if (usable.length > 0) {
-      const host = usable[0].exchange.toLowerCase().trim();
-      if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1") {
-        return { domain, status: "no-mail", mxHost: null, implicitMx: false, detail: "loopback MX" };
-      }
-      return { domain, status: "ok", mxHost: host, implicitMx: false };
-    }
+    
+if (usable.length > 0) {
+  const hosts = usable.map((r) => r.exchange.toLowerCase().trim());
+  const host = hosts[0];
+
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "0.0.0.0" ||
+    host === "::1"
+  ) {
+    return {
+      domain,
+      status: "no-mail",
+      mxHost: null,
+      implicitMx: false,
+      detail: "loopback MX",
+    };
+  }
+
+  return {
+    domain,
+    status: "ok",
+    mxHost: host,
+    mxHosts: hosts,
+    implicitMx: false,
+  };
+}
+
 
     sawNullMx = records.some((r) => r.exchange === ".");
     mxErrorCode = "EMPTY";
