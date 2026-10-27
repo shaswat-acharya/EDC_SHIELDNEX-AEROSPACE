@@ -172,3 +172,7 @@ bun scripts/test-syntax.ts  # syntax parser + typo suggestion edge cases
 
 Next.js 16 (App Router) · TypeScript · Tailwind CSS 4 · shadcn/ui · Node `dns` + `net`/`tls`
 for DNS and SMTP — no third-party verification service is called; everything runs in-process.
+
+
+LIVE LINK
+https://edc-shieldnex-aerospace.vercel.app/
